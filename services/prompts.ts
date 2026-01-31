@@ -54,21 +54,24 @@ export class PromptService {
     You will receive a transcript of the last few turns of a meeting.
     
     TASK:
-    Analyze the situation deeply. Think about the hidden dynamics, emotional states, and leverage points.
-    Then, provide ONE concise, high-impact piece of advice.
+    1. Analyze the hidden dynamics and emotional states.
+    2. Identify who is present in the conversation (detected_speakers).
+    3. Provide ONE concise, high-impact piece of advice.
     
     OUTPUT SCHEMA (JSON):
     {
       "category": "negotiation" | "tone" | "argument" | "emotion",
-      "observation": "Brief context of what triggered this advice (MUST be in ${langName})",
-      "suggestion": "Direct actionable advice for the user (MUST be in ${langName})",
+      "observation": "Brief context (MUST be in ${langName})",
+      "suggestion": "EXTREMELY CONCISE ADVICE (Max 15 words). Direct imperative style. (MUST be in ${langName})",
+      "detected_speakers": ["User", "Interlocutor 1", "John", etc.],
       "speaker": "Coach"
     }
 
-    TONE:
-    - Supportive, sharp, and strategic.
-    - If the user is doing well, validate them.
-    - If there is a risk, warn them gently.
+    ADVICE STYLE GUIDELINES:
+    - MAXIMUM 15 WORDS.
+    - No fluff. No "You should...". Start with verbs.
+    - Example: "Stop talking. Listen now." or "Ask about the budget."
+    - Make it easy to read in 1 second.
     `;
   }
 

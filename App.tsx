@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration, Schema } from '@google/genai';
 import { CoachAdvice, Participant, ConnectionStatus, Language, InterestPoint, ConversationTurn } from './types';
-import { createBlob, decodeAudioData, decode } from './services/audio-utils';
+import { createBlob, decodeAudioData, decode, downsampleBuffer } from './services/audio-utils';
 import { LocalizationService } from './services/localization';
 import { PromptService } from './services/prompts';
 import { ParticipantService } from './services/participant-service';
@@ -57,9 +57,14 @@ const COACH_RESPONSE_SCHEMA: Schema = {
     category: { type: Type.STRING, enum: ['negotiation', 'tone', 'argument', 'emotion'] },
     observation: { type: Type.STRING },
     suggestion: { type: Type.STRING },
-    speaker: { type: Type.STRING }
+    speaker: { type: Type.STRING },
+    detected_speakers: { 
+      type: Type.ARRAY, 
+      items: { type: Type.STRING },
+      description: "List of all distinct speakers identified in the transcript context."
+    }
   },
-  required: ['category', 'observation', 'suggestion', 'speaker']
+  required: ['category', 'observation', 'suggestion', 'speaker', 'detected_speakers']
 };
 
 const App: React.FC = () => {
@@ -67,6 +72,7 @@ const App: React.FC = () => {
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.DISCONNECTED);
   
   // App State
+  const [phase, setPhase] = useState<'briefing' | 'meeting'>('briefing');
   const [advices, setAdvices] = useState<CoachAdvice[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [interestPoints, setInterestPoints] = useState<InterestPoint[]>([]);
@@ -137,6 +143,20 @@ const App: React.FC = () => {
           suggestion: adviceData.suggestion,
           speaker: 'Coach'
         }]);
+
+        // FAILSAFE: Update participants if the Coach detected someone the Live API missed
+        if (adviceData.detected_speakers && Array.isArray(adviceData.detected_speakers)) {
+          setParticipants(prev => {
+            let updated = prev;
+            adviceData.detected_speakers.forEach((sp: string) => {
+               // We add them with 'active' context to ensure they appear, but 'idle' status
+               // The third param 'tone' is a fallback since coach doesn't give realtime tone
+               updated = ParticipantService.getUpdatedParticipants(updated, sp, 'context', 'detected', lang);
+            });
+            // Reset them to idle since this is a retrospective update
+            return updated.map(p => p.status === 'speaking' ? { ...p, status: 'idle' } : p);
+          });
+        }
       }
     } catch (e) {
       console.error("Coach analysis failed:", e);
@@ -161,26 +181,50 @@ const App: React.FC = () => {
     audioContextRef.current = null;
 
     setStatus(ConnectionStatus.DISCONNECTED);
+    setPhase('briefing'); // Reset phase on stop
     setAnalyser(null);
     setLastTranscript('');
     conversationHistory.current = [];
     currentTurnBuffer.current = '';
   }, [status]);
 
+  const handleEndBriefing = () => {
+    setPhase('meeting');
+    // Add a system log indicating the switch
+    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+    const timestamp = `${Math.floor(elapsed / 60).toString().padStart(2, '0')}:${(elapsed % 60).toString().padStart(2, '0')}`;
+    setAdvices(prev => [...prev, {
+      id: 'briefing-end',
+      timestamp,
+      category: 'negotiation',
+      observation: 'System',
+      suggestion: t.briefingEndMessage,
+      speaker: 'System'
+    }]);
+  };
+
   const startMeeting = async () => {
     try {
       if (status !== ConnectionStatus.DISCONNECTED) return;
 
       setStatus(ConnectionStatus.CONNECTING);
+      setPhase('briefing');
       setAdvices([]);
       setInterestPoints([]);
       setParticipants([]);
       conversationHistory.current = [];
       
+      // FIX: Use default constructor to allow browser to pick native sample rate (prevents AudioContext error)
       const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       audioContextRef.current = inputAudioContext;
       
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // FIX: Remove sampleRate constraint to avoid "not supported" error
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          channelCount: 1,
+        } 
+      });
+      
       const source = inputAudioContext.createMediaStreamSource(stream);
       const newAnalyser = inputAudioContext.createAnalyser();
       newAnalyser.fftSize = 256;
@@ -205,6 +249,10 @@ const App: React.FC = () => {
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO], // Must be AUDIO to support tools properly in this model
+          // FIX: explicit speechConfig required for stability even if silent
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+          },
           systemInstruction: PromptService.getLiveSystemInstruction(lang),
           tools: [{ functionDeclarations: [IDENTIFY_SPEAKER_TOOL, INTEREST_POINTS_TOOL] }],
           inputAudioTranscription: {},
@@ -215,7 +263,13 @@ const App: React.FC = () => {
             const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
-              const pcmBlob = createBlob(inputData, inputAudioContext.sampleRate);
+              // Safety check for empty buffer
+              if (!inputData || inputData.length === 0) return;
+
+              // FIX: Downsample to 16000Hz explicitly before creating blob
+              const downsampledData = downsampleBuffer(inputData, inputAudioContext.sampleRate, 16000);
+              const pcmBlob = createBlob(downsampledData, 16000);
+              
               sessionPromise.then(session => {
                 if (session) session.sendRealtimeInput({ media: pcmBlob });
               }).catch(() => {});
@@ -415,9 +469,33 @@ const App: React.FC = () => {
         </div>
 
         {/* Right Column (Coach) */}
-        <div className="lg:col-span-8 flex flex-col md:min-h-0">
-          {/* UPDATED: Coach Chat has fixed height on mobile to ensure visibility and internal scroll if needed */}
-          <div className="h-96 md:h-full">
+        <div className="lg:col-span-8 flex flex-col gap-4 md:min-h-0">
+          
+          {/* NEW: Briefing Phase Panel */}
+          {status === ConnectionStatus.CONNECTED && phase === 'briefing' && (
+            <div className="shrink-0 bg-indigo-900/40 border border-indigo-500/50 p-4 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4 shadow-lg backdrop-blur-sm">
+              <div className="flex items-center gap-4 w-full md:w-auto">
+                <div className="p-3 bg-indigo-500/20 rounded-full animate-pulse border border-indigo-500/30 shrink-0">
+                  <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="font-bold text-indigo-300 uppercase tracking-widest text-xs mb-1">{t.briefingMode}</h3>
+                  <p className="text-sm text-slate-200 leading-snug">{t.briefingInstruction}</p>
+                </div>
+              </div>
+              <button 
+                onClick={handleEndBriefing} 
+                className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-lg hover:shadow-indigo-500/25 active:scale-95 whitespace-nowrap"
+              >
+                {t.startInterviewBtn}
+              </button>
+            </div>
+          )}
+
+          {/* Coach Chat takes remaining space */}
+          <div className="flex-1 min-h-0">
             <CoachChat advices={advices} t={t} isThinking={isThinking} />
           </div>
         </div>

@@ -64,4 +64,8 @@ export interface Translations {
   welcomeMessage: string;
   readyMessage: string;
   thinking: string;
+  briefingEndMessage: string;
+  briefingMode: string;
+  briefingInstruction: string;
+  startInterviewBtn: string;
 }

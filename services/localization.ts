@@ -27,7 +27,11 @@ const TRANSLATIONS: Record<Language, Translations> = {
     interestPointsTitle: 'Meeting Interests',
     welcomeMessage: "System ready. Phase 1: Audio Perception Active. Phase 2: Strategic Reasoning Active.",
     readyMessage: "Game plan updated.",
-    thinking: "Analyzing strategy..."
+    thinking: "Analyzing strategy...",
+    briefingEndMessage: "Briefing complete. Transitioning to active coaching.",
+    briefingMode: "Briefing Phase",
+    briefingInstruction: "Describe your goals and context to the AI before the meeting starts.",
+    startInterviewBtn: "Start Meeting"
   },
   fr: {
     title: 'Meeting Coach Pro',
@@ -54,7 +58,11 @@ const TRANSLATIONS: Record<Language, Translations> = {
     interestPointsTitle: 'Points d’intérêts',
     welcomeMessage: "Système prêt. Phase 1 : Perception Audio Active. Phase 2 : Raisonnement Stratégique Actif.",
     readyMessage: "Plan de match mis à jour.",
-    thinking: "Analyse stratégique en cours..."
+    thinking: "Analyse stratégique en cours...",
+    briefingEndMessage: "Briefing terminé. Passage au coaching actif.",
+    briefingMode: "Phase de Briefing",
+    briefingInstruction: "Décrivez vos objectifs et le contexte à l'IA avant que la réunion ne commence.",
+    startInterviewBtn: "Lancer la réunion"
   },
   es: {
     title: 'Meeting Coach Pro',
@@ -81,7 +89,11 @@ const TRANSLATIONS: Record<Language, Translations> = {
     interestPointsTitle: 'Puntos de Interés',
     welcomeMessage: "Sistema listo. Fase 1: Percepción de Audio Activa. Fase 2: Razonamiento Estratégico Activo.",
     readyMessage: "Plan de juego actualizado.",
-    thinking: "Analizando estrategia..."
+    thinking: "Analizando estrategia...",
+    briefingEndMessage: "Briefing completado. Pasando a coaching activo.",
+    briefingMode: "Fase de Briefing",
+    briefingInstruction: "Describa sus objetivos y el contexto a la IA antes de que comience la reunión.",
+    startInterviewBtn: "Comenzar reunión"
   }
 };
 

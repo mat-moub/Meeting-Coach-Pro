@@ -41,11 +41,11 @@ const CoachChat: React.FC<CoachChatProps> = ({ advices, t, isThinking }) => {
               <div key={advice.id} className="group relative animate-in fade-in slide-in-from-bottom-2 duration-500">
                 <div className="absolute -left-2 top-0 bottom-0 w-1 bg-teal-500/30 rounded-full group-hover:bg-teal-500 transition-colors"></div>
                 <div className="pl-4">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] font-mono text-slate-400 bg-slate-900 px-1.5 py-0.5 rounded">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-1 rounded">
                       {advice.timestamp}
                     </span>
-                    <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${
+                    <span className={`text-[11px] uppercase font-bold px-2 py-1 rounded tracking-wide ${
                       advice.category === 'negotiation' ? 'bg-amber-900/40 text-amber-400' :
                       advice.category === 'emotion' ? 'bg-purple-900/40 text-purple-400' :
                       'bg-blue-900/40 text-blue-400'
@@ -55,8 +55,10 @@ const CoachChat: React.FC<CoachChatProps> = ({ advices, t, isThinking }) => {
                   </div>
                   {/* Observation hidden as per user request */}
                   {/* <p className="text-sm text-slate-300 font-medium mb-1">{advice.observation}</p> */}
-                  <div className="p-3 bg-teal-500/5 rounded-lg border border-teal-500/20">
-                    <p className="text-sm text-teal-300 italic">" {advice.suggestion} "</p>
+                  <div className="p-4 bg-teal-500/5 rounded-xl border border-teal-500/20 shadow-sm hover:shadow-md transition-shadow">
+                    <p className="text-lg md:text-xl text-teal-200 font-semibold leading-snug tracking-tight">
+                      {advice.suggestion}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -66,9 +68,9 @@ const CoachChat: React.FC<CoachChatProps> = ({ advices, t, isThinking }) => {
             {isThinking && (
               <div className="flex items-center gap-3 p-4 bg-slate-800/30 rounded-lg animate-pulse">
                 <div className="flex gap-1">
-                  <span className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                  <span className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                  <span className="w-1.5 h-1.5 bg-teal-400 rounded-full animate-bounce"></span>
+                  <span className="w-2 h-2 bg-teal-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                  <span className="w-2 h-2 bg-teal-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                  <span className="w-2 h-2 bg-teal-400 rounded-full animate-bounce"></span>
                 </div>
                 <span className="text-xs font-bold text-teal-500 uppercase tracking-widest">{t.thinking}</span>
               </div>
