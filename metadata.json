@@ -1,0 +1,7 @@
+{
+  "name": "Meeting Coach Pro",
+  "description": "An advanced AI assistant for professional meetings that analyzes voices, detects emotions, and provides real-time negotiation advice via a secondary background agent.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
