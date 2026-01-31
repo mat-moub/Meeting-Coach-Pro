@@ -25,6 +25,12 @@ export interface Participant {
   lastEmotion?: string;
 }
 
+export interface ConversationTurn {
+  speaker: string;
+  text: string;
+  timestamp: number;
+}
+
 export enum ConnectionStatus {
   DISCONNECTED = 'DISCONNECTED',
   CONNECTING = 'CONNECTING',
@@ -57,4 +63,5 @@ export interface Translations {
   interestPointsTitle: string;
   welcomeMessage: string;
   readyMessage: string;
+  thinking: string;
 }

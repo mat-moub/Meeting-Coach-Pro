@@ -28,7 +28,6 @@ const ParticipantList: React.FC<ParticipantListProps> = ({ participants, t, lang
             <ParticipantItem 
               key={p.id} 
               participant={p} 
-              observationLabel={t.observationLabel} 
               lang={lang}
             />
           ))

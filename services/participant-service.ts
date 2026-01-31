@@ -11,7 +11,7 @@ export class ParticipantService {
     const lowercaseName = name.toLowerCase();
     const userTerms = [
       'you', 'user', 'me', 'coaché', 'coached', 'entrenado', 'usted', 
-      t.youMention.toLowerCase(), 'utilisateur', 'moi'
+      t.youMention.toLowerCase(), 'utilisateur', 'moi', t.you.toLowerCase()
     ];
     return userTerms.some(term => lowercaseName.includes(term));
   }
@@ -27,14 +27,16 @@ export class ParticipantService {
     observation: string,
     lang: Language
   ): Participant[] {
-    const identifiedAsUser = this.isUser(speakerName, lang);
     const t = LocalizationService.getTranslations(lang);
+    const isGeneric = this.isGenericTerm(speakerName, lang);
+    const displayName = isGeneric ? t.you : speakerName;
+    const identifiedAsUser = this.isUser(speakerName, lang);
 
     // If no participants exist, the first detected speaker is always the Coached User.
     if (prev.length === 0) {
       return [{
         id: 'user',
-        name: speakerName,
+        name: displayName,
         isUser: true,
         status: 'speaking' as const,
         lastEmotion: category === 'emotion' || category === 'tone' ? observation : undefined
@@ -51,8 +53,17 @@ export class ParticipantService {
     if (identifiedAsUser && userParticipant) {
       return prev.map(p => {
         if (p.isUser) {
-          // Update user name if the AI provided a real name instead of generic label
-          const newName = !this.isGenericTerm(speakerName, lang) ? speakerName : p.name;
+          // Update user name only if it's not generic, or if we want to enforce t.you for generic names
+          let newName = p.name;
+          
+          if (!isGeneric) {
+             // AI gave a specific name (e.g. "John"), update it.
+             newName = speakerName;
+          } else if (p.name === 'User' || p.name === 'Utilisateur' || p.name === 'Usuario') {
+             // Legacy/Fallback: If current name is old generic, update to localized "Vous"/"You"
+             newName = t.you;
+          }
+
           return {
             ...p,
             name: newName,
@@ -81,7 +92,7 @@ export class ParticipantService {
     // 4. Create new participant if no match found
     return [...prev.map(p => ({ ...p, status: 'idle' as const })), {
       id: Math.random().toString(36).substr(2, 5),
-      name: speakerName,
+      name: displayName,
       isUser: false,
       status: 'speaking' as const,
       lastEmotion: category === 'emotion' || category === 'tone' ? observation : undefined
@@ -91,7 +102,11 @@ export class ParticipantService {
   private static isGenericTerm(name: string, lang: Language): boolean {
     const t = LocalizationService.getTranslations(lang);
     const lowercase = name.toLowerCase();
-    const generics = ['you', 'user', 'utilisateur', 'usted', t.youMention.toLowerCase()];
+    const generics = [
+      'you', 'user', 'utilisateur', 'usted', 'moi',
+      t.youMention.toLowerCase(), 
+      t.you.toLowerCase()
+    ];
     return generics.includes(lowercase);
   }
 }

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration } from '@google/genai';
-import { CoachAdvice, Participant, ConnectionStatus, Language, InterestPoint } from './types';
+import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration, Schema } from '@google/genai';
+import { CoachAdvice, Participant, ConnectionStatus, Language, InterestPoint, ConversationTurn } from './types';
 import { createBlob, decodeAudioData, decode } from './services/audio-utils';
 import { LocalizationService } from './services/localization';
 import { PromptService } from './services/prompts';
@@ -11,35 +11,30 @@ import VoiceVisualizer from './components/VoiceVisualizer';
 import ParticipantList from './components/ParticipantList';
 import InterestPoints from './components/InterestPoints';
 
-const ADVICE_TOOL_DECLARATION: FunctionDeclaration = {
-  name: 'provide_coach_advice',
+// --- TOOL DEFINITIONS ---
+
+// Tool 1: Fast Perception (Live API) - Identifies who is speaking
+const IDENTIFY_SPEAKER_TOOL: FunctionDeclaration = {
+  name: 'identify_speaker_activity',
   parameters: {
     type: Type.OBJECT,
-    description: 'Provide real-time advice or encouragement to the user.',
+    description: 'Log who is currently speaking. TRIGGER THIS IMMEDIATELY WHENEVER THE VOICE OR SPEAKER CHANGES.',
     properties: {
-      category: {
+      speakerName: {
         type: Type.STRING,
-        description: 'Type of advice.',
-        enum: ['negotiation', 'tone', 'argument', 'emotion']
+        description: 'Name or role (e.g., User, Interlocutor 1, Interlocutor 2). Use distinct labels for different voices.'
       },
-      observation: {
+      emotion: {
         type: Type.STRING,
-        description: 'Vocal or conversational observation.'
-      },
-      suggestion: {
-        type: Type.STRING,
-        description: 'Actionable suggestion or confidence-boosting words for the user.'
-      },
-      speaker: {
-        type: Type.STRING,
-        description: 'The person identified as speaking.'
+        description: 'Detected emotional tone.'
       }
     },
-    required: ['category', 'observation', 'suggestion', 'speaker'],
+    required: ['speakerName', 'emotion'],
   },
 };
 
-const INTEREST_POINTS_TOOL_DECLARATION: FunctionDeclaration = {
+// Tool 2: Fast Perception (Live API) - Updates goals
+const INTEREST_POINTS_TOOL: FunctionDeclaration = {
   name: 'update_meeting_interest_points',
   parameters: {
     type: Type.OBJECT,
@@ -55,33 +50,102 @@ const INTEREST_POINTS_TOOL_DECLARATION: FunctionDeclaration = {
   },
 };
 
+// --- SCHEMA FOR COACH ENDPOINT (Endpoint 2) ---
+const COACH_RESPONSE_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    category: { type: Type.STRING, enum: ['negotiation', 'tone', 'argument', 'emotion'] },
+    observation: { type: Type.STRING },
+    suggestion: { type: Type.STRING },
+    speaker: { type: Type.STRING }
+  },
+  required: ['category', 'observation', 'suggestion', 'speaker']
+};
+
 const App: React.FC = () => {
   const [lang, setLang] = useState<Language>('en');
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.DISCONNECTED);
+  
+  // App State
   const [advices, setAdvices] = useState<CoachAdvice[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [interestPoints, setInterestPoints] = useState<InterestPoint[]>([]);
   const [lastTranscript, setLastTranscript] = useState<string>('');
+  const [isThinking, setIsThinking] = useState<boolean>(false);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   
+  // Buffers for Logic
+  const conversationHistory = useRef<ConversationTurn[]>([]);
+  const currentTurnBuffer = useRef<string>('');
+  const lastCoachCallTime = useRef<number>(0);
+  
+  // Refs for Cleanup
   const audioContextRef = useRef<AudioContext | null>(null);
   const sessionRef = useRef<any>(null);
   const startTimeRef = useRef<number>(0);
+  const coachAiClient = useRef<GoogleGenAI | null>(null);
 
   const t = LocalizationService.getTranslations(lang);
 
-  const addCoachMessage = (text: string) => {
-    const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
-    const timestamp = `${Math.floor(elapsed / 60).toString().padStart(2, '0')}:${(elapsed % 60).toString().padStart(2, '0')}`;
-    setAdvices(prev => [...prev, {
-      id: Math.random().toString(36).substr(2, 9),
-      timestamp,
-      category: 'negotiation',
-      observation: 'System',
-      suggestion: text,
-      speaker: 'Coach'
-    }]);
+  // --- LOGIC: COACH REASONING ENGINE (ENDPOINT 2) ---
+  const triggerCoachAnalysis = async () => {
+    // Throttling: Don't call coach too often (e.g. min 5 seconds between thoughts)
+    const now = Date.now();
+    if (now - lastCoachCallTime.current < 5000) return;
+    if (conversationHistory.current.length === 0) return;
+
+    // Grab recent context (last 5 turns)
+    const recentContext = conversationHistory.current.slice(-5);
+    const contextString = recentContext.map(t => `${t.speaker}: ${t.text}`).join('\n');
+
+    setIsThinking(true);
+    lastCoachCallTime.current = now;
+
+    try {
+      if (!coachAiClient.current) {
+        coachAiClient.current = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      }
+
+      // Use a model capable of 'Thinking' if available, otherwise standard flash
+      // Note: gemini-3-flash-preview supports thinkingConfig
+      const response = await coachAiClient.current.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: [
+          { role: 'user', parts: [{ text: contextString }] }
+        ],
+        config: {
+          systemInstruction: PromptService.getCoachSystemInstruction(lang),
+          responseMimeType: 'application/json',
+          responseSchema: COACH_RESPONSE_SCHEMA,
+          // Deep reasoning config
+          thinkingConfig: { thinkingBudget: 1024 } 
+        }
+      });
+
+      const jsonText = response.text;
+      if (jsonText) {
+        const adviceData = JSON.parse(jsonText);
+        
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
+        const timestamp = `${Math.floor(elapsed / 60).toString().padStart(2, '0')}:${(elapsed % 60).toString().padStart(2, '0')}`;
+        
+        setAdvices(prev => [...prev, {
+          id: Math.random().toString(36).substr(2, 9),
+          timestamp,
+          category: adviceData.category,
+          observation: adviceData.observation,
+          suggestion: adviceData.suggestion,
+          speaker: 'Coach'
+        }]);
+      }
+    } catch (e) {
+      console.error("Coach analysis failed:", e);
+    } finally {
+      setIsThinking(false);
+    }
   };
+
+  // --- LOGIC: MEETING CONTROL ---
 
   const stopMeeting = useCallback(() => {
     if (status === ConnectionStatus.DISCONNECTED) return;
@@ -99,6 +163,8 @@ const App: React.FC = () => {
     setStatus(ConnectionStatus.DISCONNECTED);
     setAnalyser(null);
     setLastTranscript('');
+    conversationHistory.current = [];
+    currentTurnBuffer.current = '';
   }, [status]);
 
   const startMeeting = async () => {
@@ -108,8 +174,8 @@ const App: React.FC = () => {
       setStatus(ConnectionStatus.CONNECTING);
       setAdvices([]);
       setInterestPoints([]);
-      // Start with empty participants list. First speaker will be identified as User.
       setParticipants([]);
+      conversationHistory.current = [];
       
       const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       audioContextRef.current = inputAudioContext;
@@ -124,14 +190,23 @@ const App: React.FC = () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       startTimeRef.current = Date.now();
 
-      addCoachMessage(t.welcomeMessage);
+      // Initial system message
+      setAdvices([{
+        id: 'init',
+        timestamp: '00:00',
+        category: 'negotiation',
+        observation: 'System',
+        suggestion: t.welcomeMessage,
+        speaker: 'System'
+      }]);
 
+      // --- ENDPOINT 1: FAST PERCEPTION (LIVE API) ---
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
-          responseModalities: [Modality.AUDIO],
-          systemInstruction: PromptService.getSystemInstruction(lang),
-          tools: [{ functionDeclarations: [ADVICE_TOOL_DECLARATION, INTEREST_POINTS_TOOL_DECLARATION] }],
+          responseModalities: [Modality.AUDIO], // Must be AUDIO to support tools properly in this model
+          systemInstruction: PromptService.getLiveSystemInstruction(lang),
+          tools: [{ functionDeclarations: [IDENTIFY_SPEAKER_TOOL, INTEREST_POINTS_TOOL] }],
           inputAudioTranscription: {},
         },
         callbacks: {
@@ -149,39 +224,61 @@ const App: React.FC = () => {
             scriptProcessor.connect(inputAudioContext.destination);
           },
           onmessage: async (msg: LiveServerMessage) => {
+            // 1. Handle Transcription
             if (msg.serverContent?.inputTranscription) {
-              setLastTranscript(msg.serverContent.inputTranscription.text);
+              const text = msg.serverContent.inputTranscription.text;
+              if (text) {
+                setLastTranscript(text);
+                currentTurnBuffer.current += text;
+              }
             }
 
+            // 2. Handle Turn Completion -> Push to History -> Trigger Coach
+            if (msg.serverContent?.turnComplete) {
+              if (currentTurnBuffer.current.trim().length > 5) {
+                conversationHistory.current.push({
+                  speaker: 'Unknown', // Will be updated by tool or assumed
+                  text: currentTurnBuffer.current,
+                  timestamp: Date.now()
+                });
+                
+                // TRIGGER ENDPOINT 2 (Coach)
+                triggerCoachAnalysis();
+                
+                currentTurnBuffer.current = '';
+              }
+            }
+
+            // 3. Handle Tools (Fast Perception Results)
             if (msg.toolCall) {
               for (const fc of msg.toolCall.functionCalls) {
-                if (fc.name === 'provide_coach_advice') {
+                if (fc.name === 'identify_speaker_activity') {
                   const args = fc.args as any;
-                  const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
-                  const timestamp = `${Math.floor(elapsed / 60).toString().padStart(2, '0')}:${(elapsed % 60).toString().padStart(2, '0')}`;
+                  const speakerName = args.speakerName;
                   
-                  setAdvices(prev => [...prev, {
-                    id: Math.random().toString(36).substr(2, 9),
-                    timestamp,
-                    category: args.category,
-                    observation: args.observation,
-                    suggestion: args.suggestion,
-                    speaker: args.speaker || "Unknown"
-                  }]);
-
+                  // Update UI Participants
                   setParticipants(prev => ParticipantService.getUpdatedParticipants(
-                    prev, args.speaker || "Unknown", args.category, args.observation, lang
+                    prev, speakerName, 'emotion', args.emotion, lang
                   ));
+                  
+                  // Retrospectively label the last turn in history if it was "Unknown"
+                  if (conversationHistory.current.length > 0) {
+                    const lastIdx = conversationHistory.current.length - 1;
+                    if (conversationHistory.current[lastIdx].speaker === 'Unknown') {
+                      conversationHistory.current[lastIdx].speaker = speakerName;
+                    }
+                  }
 
                   sessionPromise.then(session => {
                     session.sendToolResponse({
                       functionResponses: {
                         id: fc.id,
                         name: fc.name,
-                        response: { acknowledged: true }
+                        response: { status: "logged" }
                       }
                     });
                   });
+
                 } else if (fc.name === 'update_meeting_interest_points') {
                   const args = fc.args as any;
                   const newPoints: InterestPoint[] = args.points.map((p: string) => ({
@@ -220,23 +317,25 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen p-4 md:p-8 flex flex-col gap-6 max-w-7xl mx-auto h-screen overflow-hidden">
+    // UPDATED: Removed fixed h-screen on mobile, enabled scroll. Added md:h-screen md:overflow-hidden for desktop dashboard feel.
+    <div className="min-h-screen p-4 md:p-8 flex flex-col gap-6 max-w-7xl mx-auto md:h-screen md:overflow-hidden">
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0">
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-1 w-full md:w-auto">
           <h1 className="text-3xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-teal-400 to-emerald-400 drop-shadow-sm">
             {t.title}
           </h1>
           <p className="text-slate-400 text-sm font-medium">{t.subtitle}</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-4">
+        {/* UPDATED: Controls container to align items on one line on mobile with reduced gaps */}
+        <div className="flex items-center gap-2 md:gap-4 w-full md:w-auto justify-between md:justify-end">
           <div className="flex bg-slate-800/80 p-1 rounded-xl border border-slate-700 shadow-lg">
             {LocalizationService.getSupportedLanguages().map((l) => (
               <button
                 key={l}
                 disabled={status === ConnectionStatus.CONNECTED}
                 onClick={() => setLang(l)}
-                className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase transition-all duration-200 ${
+                className={`px-3 py-1.5 md:px-4 md:py-1.5 rounded-lg text-[10px] md:text-xs font-bold uppercase transition-all duration-200 ${
                   lang === l ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'
                 } ${status === ConnectionStatus.CONNECTED ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
@@ -245,37 +344,54 @@ const App: React.FC = () => {
             ))}
           </div>
 
-          <div className="flex items-center gap-2 px-4 py-2 rounded-full glass-panel border border-slate-700 shadow-lg">
-            <div className={`w-2.5 h-2.5 rounded-full ${
-              status === ConnectionStatus.CONNECTED ? 'bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 
-              status === ConnectionStatus.CONNECTING ? 'bg-amber-500 animate-spin' : 'bg-red-500'
-            }`} />
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-200">
-              {status === ConnectionStatus.CONNECTED ? t.statusActive : 
-               status === ConnectionStatus.CONNECTING ? t.statusConnecting : t.statusOffline}
-            </span>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 px-3 py-2 md:px-4 rounded-full glass-panel border border-slate-700 shadow-lg">
+              <div className={`w-2 h-2 md:w-2.5 md:h-2.5 rounded-full ${
+                status === ConnectionStatus.CONNECTED ? 'bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 
+                status === ConnectionStatus.CONNECTING ? 'bg-amber-500 animate-spin' : 'bg-red-500'
+              }`} />
+              {/* Optional: compact status text on mobile or full text on desktop */}
+              <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider text-slate-200 whitespace-nowrap">
+                <span className="md:hidden">
+                  {status === ConnectionStatus.CONNECTED ? 'ON' : status === ConnectionStatus.CONNECTING ? '...' : 'OFF'}
+                </span>
+                <span className="hidden md:inline">
+                  {status === ConnectionStatus.CONNECTED ? t.statusActive : 
+                   status === ConnectionStatus.CONNECTING ? t.statusConnecting : t.statusOffline}
+                </span>
+              </span>
+            </div>
+            
+            {status !== ConnectionStatus.CONNECTED ? (
+              // UPDATED: Start button is icon-only on mobile (text hidden), padding reduced
+              <button onClick={startMeeting} className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 md:px-8 md:py-3 text-sm md:text-base rounded-xl font-bold transition-all shadow-xl hover:shadow-blue-500/20 active:scale-95 flex items-center gap-2 group">
+                <svg className="w-5 h-5 group-hover:animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                <span className="hidden md:inline">{t.startSession}</span>
+              </button>
+            ) : (
+              // UPDATED: Stop button consistent with Start button
+              <button onClick={stopMeeting} className="bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-500/50 px-3 py-2 md:px-8 md:py-3 text-sm md:text-base rounded-xl font-bold transition-all duration-200 flex items-center gap-2">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                <span className="hidden md:inline">{t.stopSession}</span>
+              </button>
+            )}
           </div>
-          
-          {status !== ConnectionStatus.CONNECTED ? (
-            <button onClick={startMeeting} className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-xl font-bold transition-all shadow-xl hover:shadow-blue-500/20 active:scale-95 flex items-center gap-2 group">
-              <svg className="w-5 h-5 group-hover:animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-              {t.startSession}
-            </button>
-          ) : (
-            <button onClick={stopMeeting} className="bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-500/50 px-8 py-3 rounded-xl font-bold transition-all duration-200">
-              {t.stopSession}
-            </button>
-          )}
         </div>
       </header>
 
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0 overflow-hidden">
-        <div className="lg:col-span-4 flex flex-col gap-4 min-h-0">
-          <div className="flex-[3] min-h-0 flex flex-col">
+      {/* UPDATED: Main grid uses default flow on mobile (no min-h-0 restriction) and rigid structure on desktop */}
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 md:min-h-0 md:overflow-hidden">
+        {/* Left Column */}
+        <div className="lg:col-span-4 flex flex-col gap-4 md:min-h-0">
+          {/* UPDATED: Interest Points - fixed height on mobile, flex on desktop */}
+          <div className="h-64 md:h-auto md:flex-[3] md:min-h-0 flex flex-col">
             <InterestPoints points={interestPoints} title={t.interestPointsTitle} />
           </div>
           
-          <div className="flex-[2] min-h-0 flex flex-col">
+          {/* UPDATED: Participants - fixed height on mobile, flex on desktop */}
+          <div className="h-64 md:h-auto md:flex-[2] md:min-h-0 flex flex-col">
             <ParticipantList participants={participants} t={t} lang={lang} />
           </div>
 
@@ -298,8 +414,12 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        <div className="lg:col-span-8 flex flex-col min-h-0">
-          <CoachChat advices={advices} t={t} />
+        {/* Right Column (Coach) */}
+        <div className="lg:col-span-8 flex flex-col md:min-h-0">
+          {/* UPDATED: Coach Chat has fixed height on mobile to ensure visibility and internal scroll if needed */}
+          <div className="h-96 md:h-full">
+            <CoachChat advices={advices} t={t} isThinking={isThinking} />
+          </div>
         </div>
       </main>
 
